@@ -12,7 +12,7 @@ crate-type = ["dylib"]
 
 [dependencies]
 libc = "0.2.*"
-simd = { git = "https://github.com/huonw/simd.git" }
+simd = "0.2.*"
 
 [build-dependencies]
 gcc = "0.3.*"
