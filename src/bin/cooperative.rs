@@ -30,6 +30,8 @@ use args::{process_args};
 
 extern crate time;
 
+extern crate nix;
+
 /// Returns the guaranteed upperbound for the algorithm
 /// from the queue.
 fn get_upper_bound(q: &RwLockWriteGuard<BinaryHeap<Quple>>,
@@ -411,6 +413,8 @@ fn main() {
 
     }
     else {println!("error")}
+
+    nix::sys::signal::kill(nix::unistd::getpid(), nix::sys::signal::SIGINT);
 
     // We don't need an answer from this...
     let _ea_result = ea_thread.unwrap().join();

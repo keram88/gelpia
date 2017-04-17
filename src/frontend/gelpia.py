@@ -168,7 +168,7 @@ def main():
                 term_time = start + arg_dict["grace"]
 
         iu.log(1, lambda :iu.cyan("Running"))
-        for line in iu.run_async(executable, executable_args, term_time):
+        for line in iu.run_async(executable, executable_args, term_time, expected_return=-2):
             if line.startswith("lb:"): # Hacky
                 if logging:
                     print(line.strip(), file=sys.stderr)

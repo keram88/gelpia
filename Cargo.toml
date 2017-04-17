@@ -26,6 +26,7 @@ rand = "0.3.*"
 time = "*"
 threadpool = "1.3.*"
 num_cpus = "0.*"
+nix = "0.8.*"
 
 [dependencies.scoped_threadpool]
 git = "https://github.com/Kimundi/scoped-threadpool-rs"

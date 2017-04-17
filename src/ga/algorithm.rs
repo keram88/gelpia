@@ -17,6 +17,9 @@ use function::FuncObj;
 
 type GARng = XorShiftRng;
 
+extern crate rayon;
+use rayon::prelude::*;
+
 #[derive(Clone)]
 pub struct Individual {
     pub solution: Vec<GI>,
@@ -68,42 +71,37 @@ fn ea_core(x_e: &Vec<GI>, param: &Parameters, stop: &Arc<AtomicBool>,
         ranges.push(Range::new(g.lower(), g.upper()));
     }
 
-    while !stop.load(AtOrd::Acquire) {
+    loop {//!stop.load(AtOrd::Acquire) {
         if sync.load(AtOrd::Acquire) {
+            unreachable!();
             b1.wait();
             b2.wait();
         }
         let ref mut population = *population.write().unwrap();
-        if sample(param.population, population, fo_c, &ranges, &mut rng, stop) {
-            return;
-        }
-
+        let mut extension = sample(param.population, population, fo_c, &ranges, &mut rng, stop);
+        population.append(&mut extension);
         population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
 
         for _ in 0..100 {
-            if stop.load(AtOrd::Acquire) {
-                return;
-            }
             population.truncate(param.elitism);
 
-            for _ in 0..param.selection {
-                population.push(rand_individual(fo_c, &ranges, &mut rng));
-            }
+            let mut sel_extension = sample(param.selection + param.elitism, population, fo_c, &ranges, &mut rng, stop);
+            population.append(&mut sel_extension);
 
-            if next_generation(param.population, population, fo_c, param.mutation,
-                               param.crossover, &dimension, &ranges, &mut rng,
-                               stop) {
-                return;
-            }
+            let mut gen_extension = next_generation(param.population, population, fo_c, param.mutation, param.crossover, &dimension, &ranges, &mut rng);
+            population.append(&mut gen_extension);
+
             population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
 
             // Report fittest of the fit.
             {
                 let mut fbest = f_bestag.write().unwrap();
 
-                *fbest =
-                    if *fbest < population[0].fitness { population[0].fitness }
-                else { *fbest };
+                *fbest = if *fbest < population[0].fitness {
+                    population[0].fitness
+                } else {
+                    *fbest
+                }
             }
 
             // Kill worst of the worst
@@ -116,9 +114,8 @@ fn ea_core(x_e: &Vec<GI>, param: &Parameters, stop: &Arc<AtomicBool>,
                 }
             }
             let worst_ind = population.len() - 1;
-            population[worst_ind] = rand_individual(fo_c,
-                                                    &ftg,
-                                                    &mut rng);
+            population[worst_ind] = rand_individual(fo_c, &ftg, &mut rng);
+
             population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
         }
     }
@@ -127,18 +124,31 @@ fn ea_core(x_e: &Vec<GI>, param: &Parameters, stop: &Arc<AtomicBool>,
 }
 
 
-fn sample(population_size: usize, population: &mut Vec<Individual>,
+fn sample(population_size: usize, population: &Vec<Individual>,
           fo_c: &FuncObj, ranges: &Vec<Range<f64>>, rng: &mut GARng,
           stop: &Arc<AtomicBool>)
-          -> bool {
-    for i in 0..population_size-population.len() {
-        if i % 64 == 0 && stop.load(AtOrd::Acquire) {
-            return true;
-        }
-        population.push(rand_individual(fo_c, ranges, rng));
+          -> Vec<Individual> {
+    let extension_size = population_size - population.len();
+    let mut seeds = Vec::with_capacity(extension_size);
+    unsafe { seeds.set_len(extension_size); }
+
+    for i in 0..extension_size {
+        seeds[i] = rng.next_u32();
     }
 
-    false
+    seeds.par_iter().map(|s| rand_seeded_individual(fo_c, ranges, *s)).collect()
+}
+
+
+fn rand_seeded_individual(fo_c: &FuncObj, ranges: &Vec<Range<f64>>, seed: u32)
+                          -> (Individual) {
+    let seed_r: [u32; 4] = [(seed & 0xFF000000) >> 24,
+                            (seed & 0xFF0000) >> 16,
+                            (seed & 0xFF00) >> 8 ,
+                            seed & 0xFF];
+    let mut rng: GARng = GARng::from_seed(seed_r);
+
+    rand_individual(fo_c, ranges, &mut rng)
 }
 
 
@@ -158,28 +168,49 @@ fn rand_individual(fo_c: &FuncObj, ranges: &Vec<Range<f64>>, rng: &mut GARng)
 fn next_generation(population_size:usize, population: &mut Vec<Individual>,
                    fo_c: &FuncObj, mut_rate: f64, crossover: f64,
                    dimension: &Range<usize>, ranges: &Vec<Range<f64>>,
-                   rng: &mut GARng, stop: &Arc<AtomicBool>)
-                   -> bool {
+                   rng: &mut GARng)
+                   -> Vec<Individual> {
 
     let elites = population.clone();
 
-    for i in 0..population_size-population.len() {
-        if i % 64 == 0 && stop.load(AtOrd::Acquire) {
-                return true;
-        }
-        if rng.gen::<f64>() < crossover {
-            population.push(breed((&mut *rng).choose(&elites).unwrap(),
-                                  rng.choose(&elites).unwrap(),
-                                  fo_c,
-                                  dimension, rng));
-        } else {
-            population.push(mutate(rng.choose(&elites).unwrap(), fo_c, mut_rate,
-                                   ranges, rng));
-        }
+    let extension_size = population_size - population.len();
+    let mut seeds = Vec::with_capacity(extension_size);
+    unsafe { seeds.set_len(extension_size); }
+
+    for i in 0..extension_size {
+        seeds[i] = rng.next_u32();
     }
 
-    false
+    seeds.par_iter().map(|s| seeded_next_generation_individual(&elites, fo_c, mut_rate, crossover, dimension, ranges, *s)).collect()
 }
+
+
+fn seeded_next_generation_individual(elites: &Vec<Individual>,
+                                     fo_c: &FuncObj, mut_rate: f64, crossover: f64,
+                                     dimension: &Range<usize>, ranges: &Vec<Range<f64>>,
+                                     seed: u32)
+                                     -> Individual {
+    let seed_r: [u32; 4] = [(seed & 0xFF000000) >> 24,
+                            (seed & 0xFF0000) >> 16,
+                            (seed & 0xFF00) >> 8 ,
+                            seed & 0xFF];
+    let mut rng: GARng = GARng::from_seed(seed_r);
+
+    if rng.gen::<f64>() < crossover {
+        breed(rng.choose(&elites).unwrap(),
+              rng.choose(&elites).unwrap(),
+              fo_c,
+              dimension,
+              &mut rng)
+    } else {
+        mutate(rng.choose(&elites).unwrap(),
+               fo_c,
+               mut_rate,
+               ranges,
+               &mut rng)
+    }
+}
+
 
 
 fn mutate(input: &Individual, fo_c: &FuncObj, mut_rate: f64,
