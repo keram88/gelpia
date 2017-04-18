@@ -27,6 +27,7 @@ time = "*"
 threadpool = "1.3.*"
 num_cpus = "0.*"
 nix = "0.8.*"
+mpi = { git = "https://github.com/bsteinb/rsmpi.git", tag = "0.4.0" }
 
 [dependencies.scoped_threadpool]
 git = "https://github.com/Kimundi/scoped-threadpool-rs"
@@ -36,5 +37,5 @@ opt-level = 3
 debug = false
 rpath = false
 #lto = true
-debug-assertions = false
+#debug-assertions = false
 codegen-units = 1
