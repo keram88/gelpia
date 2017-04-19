@@ -49,6 +49,7 @@ pub struct Parameters {
     pub mutation:    Flt,
     pub crossover:   Flt,
     pub seed:        u32,
+    pub threads:   usize,
 }
 // Evolutionary algo end
 
@@ -60,7 +61,8 @@ pub struct Quple {
     pub pf: u32,
     pub data: Vec<GI>,
     pub fdata: GI,
-    pub dfdata: Option<Vec<GI>>
+    pub dfdata: Option<Vec<GI>>,
+    pub dead: bool,
 }
 
 // Allow ordering of Quples

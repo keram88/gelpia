@@ -101,7 +101,7 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
     let (est_max, first_val, _) = est_func(&f, &x_0);
     {
         q.write().unwrap().push(Quple{p: est_max, pf: 0, data: x_0.clone(),
-                                      fdata: first_val, dfdata: None});
+                                      fdata: first_val, dfdata: None, dead:false});
     }
     let mut f_best_low = est_max;
     let mut f_best_high = est_max;
@@ -214,7 +214,8 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
                                                    pf: gen+1,
                                                    data: sx,
                                                    fdata: fsx,
-                                                   dfdata: dfsx});
+                                                   dfdata: dfsx,
+                                    dead: false});
                                 }
                         }
                     }
@@ -357,6 +358,7 @@ fn main() {
                                mutation: 0.4_f64,//0.3_f64,
                                crossover: 0.0_f64, // 0.5_f64
                                seed:  seed,
+                               threads: 8,
             },
                population,
                f_bestag,

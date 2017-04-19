@@ -204,14 +204,14 @@ def main():
     if output:
         try:
             idx = output.find('[')
-            output = output[idx:]
-            lst = eval(output, {'inf':float('inf')})
+            restoutput = output[idx:]
+            lst = eval(restoutput, {'inf':float('inf')})
             assert(type(lst[-1]) is dict)
             for k in list(lst[-1]):
                 if k[0] == "$":
                     del lst[-1][k]
         except:
-            print("Error unable to parse rust solver's output:",output)
+            print("Error unable to parse rust solver's output: ",output)
             iu.log(log_level, lambda: iu.green("Parsing time: ")+str(parsing_end-parsing_start))
             sys.exit(-1)
 

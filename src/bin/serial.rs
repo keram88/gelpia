@@ -29,7 +29,7 @@ fn ibba(x_0: &Vec<GI>, e_x: Flt, e_f: Flt, f: FuncObj) -> (Flt, Vec<GI>) {
     let mut i: u32 = 0;
 
     let (fc, dfc) = f.call(&x_0);
-    q.push(Quple{p: INF, pf: i, data: x_0.clone(), fdata: fc, dfdata: dfc});
+    q.push(Quple{p: INF, pf: i, data: x_0.clone(), fdata: fc, dfdata: dfc, dead: false});
     while q.len() != 0 {
         let v = q.pop();
         let (ref x, fx) =
@@ -66,7 +66,8 @@ fn ibba(x_0: &Vec<GI>, e_x: Flt, e_f: Flt, f: FuncObj) -> (Flt, Vec<GI>) {
                                  pf: i,
                                  data: sx.clone(),
                                  fdata: fc,
-                                 dfdata: dfc});
+                                 dfdata: dfc,
+                                 dead: false});
                 }
             }
         }
