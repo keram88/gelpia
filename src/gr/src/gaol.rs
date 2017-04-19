@@ -10,6 +10,11 @@ use std::f64::NEG_INFINITY as NINF;
 use std::mem;
 extern crate simd;
 
+extern crate mpi;
+use mpi::traits::*;
+use mpi::datatype::UserDatatype;
+
+
 
 pub type CInterval = simd::x86::sse2::f64x2;
 
@@ -241,6 +246,14 @@ extern {
 #[derive(Copy, Clone)]
 pub struct GI {
     pub data: gaol_int
+}
+
+impl Equivalence for GI {
+    type Out = UserDatatype;
+    fn equivalent_datatype() -> Self::Out {
+        UserDatatype::vector(1, std::mem::size_of::<GI>() as i32,
+                             0, &u8::equivalent_datatype())
+    }
 }
 
 
