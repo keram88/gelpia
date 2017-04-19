@@ -5,6 +5,9 @@ extern crate rand;
 use rand::{Rng, SeedableRng, XorShiftRng};
 use rand::distributions::{IndependentSample, Range};
 
+extern crate mpi;
+use mpi::traits::*;
+use mpi::datatype::UserDatatype;
 
 extern crate gr;
 use gr::{GI};
@@ -24,6 +27,14 @@ use rayon::prelude::*;
 pub struct Individual {
     pub solution: Vec<GI>,
     pub fitness: Flt,
+}
+
+impl Equivalence for Individual {
+    type Out = UserDatatype;
+    fn equivalent_datatype() -> Self::Out {
+        UserDatatype::vector(1, std::mem::size_of::<Individual>() as i32,
+                             0, &u8::equivalent_datatype())
+    }
 }
 
 pub fn ea(x_e: Vec<GI>,
