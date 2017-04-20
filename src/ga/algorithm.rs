@@ -62,17 +62,21 @@ fn ea_core(x_e: &Vec<GI>,
            fo_c: &FuncObj,
            world: &SystemCommunicator)
            -> () {
+    let rank = world.rank();
+    let next_rank = if rank < world.size() - 1 { rank } else { 1 };
 
     let seed: u32 =
         match param.seed {
             0 => 3735928579,
             1 => rand::thread_rng().next_u32(),
             other => other,
-        };
+        } + ((rank*17) as u32);
+    
     let seed_split: [u32; 4] = [(seed & 0xFF000000) >> 24,
                                 (seed & 0xFF0000) >> 16,
                                 (seed & 0xFF00) >> 8 ,
                                 (seed & 0xFF)];
+    
     let mut rng: GARng = GARng::from_seed(seed_split);
 
     let mut rngs = [0..param.population].iter().map(|_| {
