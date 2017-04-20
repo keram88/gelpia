@@ -8,6 +8,9 @@ use rand::distributions::{IndependentSample, Range};
 extern crate mpi;
 use mpi::traits::*;
 use mpi::datatype::UserDatatype;
+use mpi::topology::*;
+use mpi::ffi::{MPI_Abort, MPI_Comm};
+use mpi::raw::{AsRaw};
 
 extern crate gr;
 use gr::{GI};
@@ -22,6 +25,7 @@ type GARng = XorShiftRng;
 
 extern crate rayon;
 use rayon::prelude::*;
+
 
 #[derive(Clone)]
 pub struct Individual {
@@ -39,136 +43,128 @@ impl Equivalence for Individual {
 
 pub fn ea(x_e: Vec<GI>,
           param: Parameters,
-          population: Arc<RwLock<Vec<Individual>>>,
-          f_bestag: Arc<RwLock<Flt>>,
-          x_bestbb: Arc<RwLock<Vec<GI>>>,
-          b1: Arc<Barrier>,
-          b2: Arc<Barrier>,
-          stop: Arc<AtomicBool>,
-          sync: Arc<AtomicBool>,
-          fo_c: FuncObj) {
+          fo_c: FuncObj,
+          world: &SystemCommunicator)
+          -> () {
     // Constant function
     if x_e.len() == 0 {
         return;
     }
-    let seed = param.seed;
-    ea_core(&x_e, &param, &stop, &sync, &b1, &b2, &f_bestag,
-            &x_bestbb, population, &fo_c, seed);
-    return;
+
+    let config = rayon::Configuration::new().num_threads(param.threads);
+    let pool = rayon::ThreadPool::new(config).unwrap();
+    pool.install(|| ea_core(&x_e, &param, &fo_c, world));
 }
 
 
-fn ea_core(x_e: &Vec<GI>, param: &Parameters, stop: &Arc<AtomicBool>,
-           sync: &Arc<AtomicBool>, b1: &Arc<Barrier>, b2: &Arc<Barrier>,
-           f_bestag: &Arc<RwLock<Flt>>,
-           x_bestbb: &Arc<RwLock<Vec<GI>>>,
-           population: Arc<RwLock<Vec<Individual>>>, fo_c: &FuncObj,
-           seed: u32) {
-    let rng_seed: u32 =
-        match seed {
+fn ea_core(x_e: &Vec<GI>,
+           param: &Parameters,
+           fo_c: &FuncObj,
+           world: &SystemCommunicator)
+           -> () {
+
+    let seed: u32 =
+        match param.seed {
             0 => 3735928579,
             1 => rand::thread_rng().next_u32(),
-            _ => seed,
+            other => other,
         };
-    let seed_r: [u32; 4] = [(rng_seed & 0xFF000000) >> 24,
-                            (rng_seed & 0xFF0000) >> 16,
-                            (rng_seed & 0xFF00) >> 8 ,
-                            rng_seed & 0xFF];
-    let mut rng: GARng = GARng::from_seed(seed_r);
+    let seed_split: [u32; 4] = [(seed & 0xFF000000) >> 24,
+                                (seed & 0xFF0000) >> 16,
+                                (seed & 0xFF00) >> 8 ,
+                                (seed & 0xFF)];
+    let mut rng: GARng = GARng::from_seed(seed_split);
+
+    let mut rngs = [0..param.population].iter().map(|_| {
+        let seed = rng.next_u32();
+        let seed_split: [u32; 4] = [(seed & 0xFF000000) >> 24,
+                                    (seed & 0xFF0000) >> 16,
+                                    (seed & 0xFF00) >> 8 ,
+                                    (seed & 0xFF)];
+        GARng::from_seed(seed_split)
+    }).collect();
 
     let dimension = Range::new(0, x_e.len());
-    let mut ranges = Vec::new();
-    for g in x_e {
-        ranges.push(Range::new(g.lower(), g.upper()));
+    let ranges = x_e.iter().map(|g| Range::new(g.lower(), g.upper())).collect();
+    let mut population = Vec::new();
+    let mut elites = Vec::new();
+
+    let addition_size = param.population - population.len();
+
+    for _ in 0..addition_size {
+        let ind = rand_individual(fo_c, &ranges, &mut rng);
+        population.push(ind.clone());
     }
 
-    loop {//!stop.load(AtOrd::Acquire) {
-        if sync.load(AtOrd::Acquire) {
-            unreachable!();
-            b1.wait();
-            b2.wait();
+    population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
+
+    for i in 0..param.elitism {
+        let ind = population[i].clone();
+        elites.push(ind);
+    }
+
+    loop {
+        {
+            elites.par_iter_mut()
+                .zip(population.par_iter().take(param.elitism))
+                .for_each(|(dest, src)| *dest = src.clone())
         }
-        let ref mut population = *population.write().unwrap();
-        let mut extension = sample(param.population, population, fo_c, &ranges, &mut rng, stop);
-        population.append(&mut extension);
+        let kept = param.elitism;
+
+        let kept_new = kept + param.selection;
+        inplace_new_addition(&mut population, &mut rngs,
+                             kept, kept_new, fo_c, &ranges);
+
+        let kept_new_bred = param.population;
+        inplace_next_generation(&mut population, &mut rngs, &elites,
+                                kept_new, kept_new_bred, fo_c, param.mutation,
+                                param.crossover, &dimension, &ranges);
+
         population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
 
-        for _ in 0..100 {
-            population.truncate(param.elitism);
+        // Report fittest of the fit.
+        {
+            // let mut fbest = f_bestag.write().unwrap();
 
-            let mut sel_extension = sample(param.selection + param.elitism, population, fo_c, &ranges, &mut rng, stop);
-            population.append(&mut sel_extension);
-
-            let mut gen_extension = next_generation(param.population, population, fo_c, param.mutation, param.crossover, &dimension, &ranges, &mut rng);
-            population.append(&mut gen_extension);
-
-            population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
-
-            // Report fittest of the fit.
-            {
-                let mut fbest = f_bestag.write().unwrap();
-
-                *fbest = if *fbest < population[0].fitness {
-                    population[0].fitness
-                } else {
-                    *fbest
-                }
-            }
-
-            // Kill worst of the worst
-            let mut ftg = Vec::new();
-            {
-                let bestbb = x_bestbb.read().unwrap();
-                // From The Gods
-                for i in 0..bestbb.len() {
-                    ftg.push(Range::new(bestbb[i].lower(), bestbb[i].upper()));
-                }
-            }
-            let worst_ind = population.len() - 1;
-            population[worst_ind] = rand_individual(fo_c, &ftg, &mut rng);
-
-            population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
+            // *fbest = if *fbest < population[0].fitness {
+            //     population[0].fitness
+            // } else {
+            //     *fbest
+            // }
         }
+
+        // Kill worst of the worst
+        {
+            // let bestbb = x_bestbb.read().unwrap();
+            // let ftg = bestbb.iter().map(|g| Range::new(g.lower(), g.upper())).collect();
+            // let worst_ind = population.len() - 1;
+            // population[worst_ind] = rand_individual(fo_c, &ftg, &mut rng);
+        }
+
+        population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
     }
 
     return;
 }
 
 
-fn sample(population_size: usize, population: &Vec<Individual>,
-          fo_c: &FuncObj, ranges: &Vec<Range<f64>>, rng: &mut GARng,
-          stop: &Arc<AtomicBool>)
-          -> Vec<Individual> {
-    let extension_size = population_size - population.len();
-    let mut seeds = Vec::with_capacity(extension_size);
-    unsafe { seeds.set_len(extension_size); }
-
-    for i in 0..extension_size {
-        seeds[i] = rng.next_u32();
-    }
-
-    seeds.par_iter().map(|s| rand_seeded_individual(fo_c, ranges, *s)).collect()
+fn inplace_new_addition(population: &mut Vec<Individual>, rngs: &mut Vec<GARng>,
+                        low: usize, high: usize,
+                        fo_c: &FuncObj, ranges: &Vec<Range<f64>>)
+                        -> () {
+    let span = high - low;
+    let pop_slice = population.par_iter_mut().skip(low).take(span);
+    let rng_slice = rngs.par_iter_mut().skip(low).take(span);
+    pop_slice.zip(rng_slice).for_each(|(dest, rng)| {
+        *dest = rand_individual(fo_c, ranges, rng);
+    });
 }
-
-
-fn rand_seeded_individual(fo_c: &FuncObj, ranges: &Vec<Range<f64>>, seed: u32)
-                          -> (Individual) {
-    let seed_r: [u32; 4] = [(seed & 0xFF000000) >> 24,
-                            (seed & 0xFF0000) >> 16,
-                            (seed & 0xFF00) >> 8 ,
-                            seed & 0xFF];
-    let mut rng: GARng = GARng::from_seed(seed_r);
-
-    rand_individual(fo_c, ranges, &mut rng)
-}
-
 
 fn rand_individual(fo_c: &FuncObj, ranges: &Vec<Range<f64>>, rng: &mut GARng)
-                   -> (Individual) {
-    let mut new_sol = Vec::new();
-    for r in ranges {
-        new_sol.push(GI::new_p(r.ind_sample(rng)));
-    }
+                   -> Individual {
+    let new_sol = ranges.iter()
+        .map(|r| GI::new_p(r.ind_sample(rng)))
+        .collect();
     let (fitness_i, _) = fo_c.call(&new_sol);
     let fitness = fitness_i.lower();
 
@@ -176,57 +172,30 @@ fn rand_individual(fo_c: &FuncObj, ranges: &Vec<Range<f64>>, rng: &mut GARng)
 }
 
 
-fn next_generation(population_size:usize, population: &mut Vec<Individual>,
-                   fo_c: &FuncObj, mut_rate: f64, crossover: f64,
-                   dimension: &Range<usize>, ranges: &Vec<Range<f64>>,
-                   rng: &mut GARng)
-                   -> Vec<Individual> {
-
-    let elites = population.clone();
-
-    let extension_size = population_size - population.len();
-    let mut seeds = Vec::with_capacity(extension_size);
-    unsafe { seeds.set_len(extension_size); }
-
-    for i in 0..extension_size {
-        seeds[i] = rng.next_u32();
-    }
-
-    seeds.par_iter().map(|s| seeded_next_generation_individual(&elites, fo_c, mut_rate, crossover, dimension, ranges, *s)).collect()
+fn inplace_next_generation(population: &mut Vec<Individual>, rngs: &mut Vec<GARng>, elites: &Vec<Individual>,
+                           low: usize, high: usize,
+                           fo_c: &FuncObj, mut_rate: f64, crossover: f64,
+                           dimension: &Range<usize>, ranges: &Vec<Range<f64>>)
+                           -> () {
+    let span = high - low;
+    let pop_slice = population.par_iter_mut().skip(low).take(span);
+    let rng_slice = rngs.par_iter_mut().skip(low).take(span);
+    pop_slice.zip(rng_slice).for_each(|(dest, rng)| {
+        *dest =
+            if rng.gen::<f64>() < crossover {
+                breed(rng.choose(elites).unwrap(), rng.choose(elites).unwrap(),
+                      fo_c, dimension, rng)
+            } else {
+                mutate(rng.choose(&elites).unwrap(),
+                       fo_c, mut_rate, ranges, rng)
+            }
+    });
 }
-
-
-fn seeded_next_generation_individual(elites: &Vec<Individual>,
-                                     fo_c: &FuncObj, mut_rate: f64, crossover: f64,
-                                     dimension: &Range<usize>, ranges: &Vec<Range<f64>>,
-                                     seed: u32)
-                                     -> Individual {
-    let seed_r: [u32; 4] = [(seed & 0xFF000000) >> 24,
-                            (seed & 0xFF0000) >> 16,
-                            (seed & 0xFF00) >> 8 ,
-                            seed & 0xFF];
-    let mut rng: GARng = GARng::from_seed(seed_r);
-
-    if rng.gen::<f64>() < crossover {
-        breed(rng.choose(&elites).unwrap(),
-              rng.choose(&elites).unwrap(),
-              fo_c,
-              dimension,
-              &mut rng)
-    } else {
-        mutate(rng.choose(&elites).unwrap(),
-               fo_c,
-               mut_rate,
-               ranges,
-               &mut rng)
-    }
-}
-
 
 
 fn mutate(input: &Individual, fo_c: &FuncObj, mut_rate: f64,
           ranges: &Vec<Range<f64>>, rng: &mut GARng)
-          -> (Individual) {
+          -> Individual {
     let mut output_sol = Vec::new();
 
     for (r, &ind) in ranges.iter().zip(input.solution.iter()) {

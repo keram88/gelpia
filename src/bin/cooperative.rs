@@ -203,7 +203,7 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
             if new_best_low_it.iter_est > f_best_low {
                 f_best_low = new_best_low_it.iter_est;
                 // Broadcast best x_best
-                
+
                 //                *x_bestbb.write().unwrap() = new_best_low_it.x.clone();
             }
         }
@@ -275,7 +275,7 @@ fn main() {
     let world = universe.world();
     let size = world.size();
     let rank = world.rank();
-    
+
     let args = process_args();
 
     let ref x_0 = args.domain;
@@ -287,7 +287,7 @@ fn main() {
     let logging = args.logging;
     let max_iters = args.iters;
     let threads = args.threads;
-    
+
     // Early out if there are no input variables...
     if x_0.len() == 0 && rank == 0 {
         let result = fo.call(&x_0).0;
@@ -299,7 +299,7 @@ fn main() {
     let f_best_ga: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
     let x_e = x_0.clone();
     let x_i = x_0.clone();
-    
+
     // IBBA
     if rank == 0 {
         { // Start the timer. Don't join, just die.
@@ -322,7 +322,7 @@ fn main() {
                                                        logging, max_iters,
                                                        threads_c, &world))
         };
-        
+
         // Print the result
         let result = ibba_thread.unwrap().join();
         if result.is_ok() {
@@ -339,7 +339,7 @@ fn main() {
                     interval = new_best_high_it.x.clone();
                 }
             }
-            
+
             println!("[[{},{}], {{", min, max);
             for i in 0..args.names.len() {
                 println!("'{}' : {},", args.names[i], interval[i].to_string());
@@ -353,21 +353,22 @@ fn main() {
     }
     // GA
     else {
-        let population: Vec<Individual> = Vec::new();
         let ea_thread =
         {
             let fo_c = fo.clone();
             let factor = x_e.len();
             thread::Builder::new().name("EA".to_string()).spawn(move || {
-                ea(x_e, Parameters{population: 50*factor, //1000,
-                                   selection: 8, //4,
-                                   elitism: 5, //2,
-                                   mutation: 0.4_f64,//0.3_f64,
-                                   crossover: 0.0_f64, // 0.5_f64
-                                   seed:  seed,
-                                   threads: 8, // testing now, needs to be an arg
-                },
-                   population, fo_c, &world)
+                ea(x_e,
+                   Parameters {population: 50*factor, //1000,
+                               selection: 8, //4,
+                               elitism: 5, //2,
+                               mutation: 0.4_f64,//0.3_f64,
+                               crossover: 0.0_f64, // 0.5_f64
+                               seed:  seed,
+                               threads: 8, // testing now, needs to be an arg
+                   },
+                   fo_c,
+                   &world)
             })};
     }
 
@@ -439,7 +440,7 @@ fn main() {
     interval = new_best_high_it.x.clone();
 }
 }
-    
+
     // let ref lq = q.read().unwrap();
     // for i in qvec.iter() {
     //     let ref top = *i;
