@@ -302,7 +302,7 @@ fn main() {
     
     // IBBA
     if rank == 0 {
-        { // Start the timer
+        { // Start the timer. Don't join, just die.
             let stop = stop.clone();
             let to = args.timeout.clone();
             let ui = args.update_interval.clone();
@@ -315,38 +315,40 @@ fn main() {
         { // Start IBBA
             let threads_c = threads.clone();
             let fo_c = fo.clone();
-            ibba_threadpool_wrapper(x_e, x_err, y_err, y_rel, f_best_ga,
-                                    stop, fo_c, logging, max_iters, threads_c,
-                                    &world)
+            thread::Builder::new()
+                .name("IBBA".to_string())
+                .spawn(move || ibba_threadpool_wrapper(x_e, x_err, y_err, y_rel,
+                                                       f_best_ga, stop, fo_c,
+                                                       logging, max_iters,
+                                                       threads_c, &world))
         };
-
+        
         // Print the result
-        let (min, mut max, mut interval, mut qvec) = ibba_thread;
-        // Go through all remaining intervals from IBBA to find the true
-        // max
-        // update f_best_high
-        if let Some(new_best_high_it) = qvec.par_iter().max_by_key(|it| f64_o::new(it.fx.upper()) ) {
-            if new_best_high_it.fx.upper() > max {
-                max = new_best_high_it.fx.upper();
-                interval = new_best_high_it.x.clone();
+        let result = ibba_thread.unwrap().join();
+        if result.is_ok() {
+            let (min, mut max, mut interval, mut qvec) = result.unwrap();
+            // Go through all remaining intervals from IBBA to find the true
+            // max
+            // update f_best_high
+            if let Some(new_best_high_it) =
+                qvec.par_iter()
+                .max_by_key(|it| f64_o::new(it.fx.upper()))
+            {
+                if new_best_high_it.fx.upper() > max {
+                    max = new_best_high_it.fx.upper();
+                    interval = new_best_high_it.x.clone();
+                }
             }
+            
+            println!("[[{},{}], {{", min, max);
+            for i in 0..args.names.len() {
+                println!("'{}' : {},", args.names[i], interval[i].to_string());
+            }
+            println!("}}]");
         }
-        
-        // let ref lq = q.read().unwrap();
-        // for i in qvec.iter() {
-        //     let ref top = *i;
-        //     let (ub, dom) = (top.fdata.upper(), &top.data);
-        //     if ub > max {
-        //     max = ub;
-        //     interval = dom.clone();
-        // }
-        // }
-        println!("[[{},{}], {{", min, max);
-        for i in 0..args.names.len() {
-            println!("'{}' : {},", args.names[i], interval[i].to_string());
+        else {
+            println!("error");
         }
-        println!("}}]");
-        
         unsafe{ mpi::ffi::MPI_Abort(world.as_raw(), 0); } // Not a good way to die
     }
     // GA
