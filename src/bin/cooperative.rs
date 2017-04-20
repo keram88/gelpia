@@ -353,7 +353,22 @@ fn main() {
     }
     // GA
     else {
-        
+        let population: Vec<Individual> = Vec::new();
+        let ea_thread =
+        {
+            let fo_c = fo.clone();
+            let factor = x_e.len();
+            thread::Builder::new().name("EA".to_string()).spawn(move || {
+                ea(x_e, Parameters{population: 50*factor, //1000,
+                                   selection: 8, //4,
+                                   elitism: 5, //2,
+                                   mutation: 0.4_f64,//0.3_f64,
+                                   crossover: 0.0_f64, // 0.5_f64
+                                   seed:  seed,
+                                   threads: 8, // testing now, needs to be an arg
+                },
+                   population, fo_c, &world)
+            })};
     }
 
     //    let f_best_shared: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
