@@ -25,6 +25,7 @@ pub struct Args {
     pub func_suffix: String,
     pub logging: bool,
     pub seed: u32,
+    pub threads: usize,
 }
 
 
@@ -75,6 +76,7 @@ pub fn process_args() -> Args {
     opts.reqopt("y", "y_epsilon", "", "");
     opts.reqopt("n", "names", "", "");
     opts.reqopt("r", "y_epsilon_relative", "", "");
+    opts.reqopt("T", "threads", "", "");
     
     // Optional
     opts.optopt("t", "time_out", "", "");
@@ -131,6 +133,11 @@ pub fn process_args() -> Args {
     } else {
         0 as u32
     };
+    let threads = if matches.opt_present("T") {
+        matches.opt_str("T").unwrap().parse::<usize>().unwrap()
+    } else {
+        1 as usize
+    };
 
     // Return parsed information in a struct
     Args{domain: x_0, 
@@ -144,5 +151,6 @@ pub fn process_args() -> Args {
          update_interval: ui, 
          func_suffix: func_suffix,
          logging: logging,
-         seed: seed}
+         seed: seed,
+         threads: threads}
 }

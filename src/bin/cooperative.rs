@@ -9,7 +9,9 @@ extern crate ga;
 extern crate gr;
 
 extern crate mpi;
-
+use mpi::topology::*;
+use mpi::ffi::{MPI_Abort, MPI_Comm};
+use mpi::raw::{AsRaw};
 
 use ga::{ea, Individual};
 
@@ -59,8 +61,6 @@ impl Ord for f64_o {
         }
     }
 }
-
-
 
 /// Returns the guaranteed upperbound for the algorithm
 /// from the queue.
@@ -123,35 +123,25 @@ pub struct Item {
 }
 
 fn ibba_threadpool_wrapper(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
-                           f_bestag: Arc<RwLock<Flt>>,
-                           f_best_shared: Arc<RwLock<Flt>>,
-                           x_bestbb: Arc<RwLock<Vec<GI>>>,
-                           b1: Arc<Barrier>, b2: Arc<Barrier>,
-                           q: Arc<RwLock<BinaryHeap<Quple>>>,
-                           sync: Arc<AtomicBool>, stop: Arc<AtomicBool>,
-                           f: FuncObj,
-                           logging: bool, max_iters: u32, threads: usize)
+                           f_best_ga: Arc<RwLock<Flt>>,
+                           stop: Arc<AtomicBool>, f: FuncObj,
+                           logging: bool, max_iters: u32, threads: usize,
+                           world: &SystemCommunicator)
                            -> (Flt, Flt, Vec<GI>, Vec<Item>) {
+    // Start GA bound listener thread
     let config = rayon::Configuration::new().num_threads(threads);
     let pool = rayon::ThreadPool::new(config).unwrap();
-    pool.install(|| ibba(x_0, e_x, e_f, e_f_r,
-                         f_bestag, f_best_shared,
-                         x_bestbb,
-                         b1, b2, q, sync, stop, f, logging, max_iters))
+    pool.install(|| ibba(x_0, e_x, e_f, e_f_r, f_best_ga, stop, f, logging,
+                         max_iters, world))
 }
 
 
 // Returns the upper bound, the domain where this bound occurs and a status
 // flag indicating whether the answer is complete for the problem.
 fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
-        f_bestag: Arc<RwLock<Flt>>,
-        f_best_shared: Arc<RwLock<Flt>>,
-        x_bestbb: Arc<RwLock<Vec<GI>>>,
-        b1: Arc<Barrier>, b2: Arc<Barrier>,
-        q: Arc<RwLock<BinaryHeap<Quple>>>,
-        sync: Arc<AtomicBool>, stop: Arc<AtomicBool>,
-        f: FuncObj,
-        logging: bool, max_iters: u32)
+        f_best_ga: Arc<RwLock<Flt>>,
+        stop: Arc<AtomicBool>, f: FuncObj,
+        logging: bool, max_iters: u32, world: &SystemCommunicator)
         -> (Flt, Flt, Vec<GI>, Vec<Item>) {
     let mut best_x = x_0.clone();
 
@@ -173,16 +163,9 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
         if max_iters != 0 && iters >= max_iters {
             break;
         }
-        if sync.load(Ordering::Acquire) {
-            // Ugly: Update the update thread's view of the best branch bound.
-            unreachable!();
-            *f_best_shared.write().unwrap() = f_best_low;
-            b1.wait();
-            b2.wait();
-        }
 
         let fbl_orig = f_best_low;
-        f_best_low = max!(f_best_low, *f_bestag.read().unwrap());
+        f_best_low = max!(f_best_low, *f_best_ga.read().unwrap());
 
         if update_iters > 2048 {
             update_iters = 0;
@@ -219,7 +202,9 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
         if let Some(new_best_low_it) = split_vec.par_iter().max_by_key(|it| f64_o::new(it.iter_est) ) {
             if new_best_low_it.iter_est > f_best_low {
                 f_best_low = new_best_low_it.iter_est;
-                *x_bestbb.write().unwrap() = new_best_low_it.x.clone();
+                // Broadcast best x_best
+                
+                //                *x_bestbb.write().unwrap() = new_best_low_it.x.clone();
             }
         }
 
@@ -261,117 +246,36 @@ fn split(it: &Item, f: &FuncObj) -> Vec<Item> {
     }
 }
 
-fn distance(p: &Vec<GI>, x: &Vec<GI>) -> Flt {
-    let mut result = 0.0;
-    for i in 0..x.len() {
-        let dx = max!(x[i].lower() - p[i].lower(),
-                      0.0, &p[i].lower() - x[i].upper());
-        result += dx*dx;
-    }
-    result.sqrt()
-}
-
-fn update(q: Arc<RwLock<BinaryHeap<Quple>>>, population: Arc<RwLock<Vec<Individual>>>,
-          f_best_shared: Arc<RwLock<Flt>>,
-          stop: Arc<AtomicBool>, sync: Arc<AtomicBool>,
-          b1: Arc<Barrier>, b2: Arc<Barrier>,
-          f: FuncObj,
-          upd_interval: u32,
-          timeout: u32) {
+fn timer(stop: Arc<AtomicBool>, upd_interval: u32, timeout: u32) {
     let start = time::get_time();
     let one_sec = Duration::new(1, 0);
     'out: while !stop.load(Ordering::Acquire) {
         // Timer code...
         let last_update = time::get_time();
         while upd_interval == 0 ||
-            (time::get_time() - last_update).num_seconds() <= upd_interval as i64 {
-                thread::sleep(one_sec);
-                if timeout > 0 &&
-                    (time::get_time() - start).num_seconds() >= timeout as i64 {
-                        let _ = writeln!(&mut std::io::stderr(), "Stopping early...");
-                        stop.store(true, Ordering::Release);
-                        break 'out;
-                    }
-                if stop.load(Ordering::Acquire) { // Check if we've already stopped
-                    break 'out;
-                }
+            (time::get_time() - last_update).num_seconds() <= upd_interval as i64
+        {
+            thread::sleep(one_sec);
+            if timeout > 0 &&
+                (time::get_time() - start).num_seconds() >= timeout as i64
+            {
+                let _ = writeln!(&mut std::io::stderr(), "Stopping early...");
+                stop.store(true, Ordering::Release);
+                break 'out;
             }
-        // Signal EA and IBBA threads.
-        sync.store(true, Ordering::Release);
-
-        // Wait for EA and IBBA threads to stop.
-        b1.wait();
-        // Do update bizness.
-        let mut q_u = q.write().unwrap();
-        let mut q = Vec::new();
-        for qi in q_u.iter() {
-            q.push(qi.clone());
-        }
-        let mut pop = population.write().unwrap();
-        let fbest = f_best_shared.read().unwrap();
-
-        for i in 0..pop.len() {
-            let mut d_min = INF;
-            let mut j = 0;
-            let mut x: Vec<GI>;
-            let px: Flt = NINF;
-            let mut x_c: Vec<GI> = q[0].data.clone();
-            while j < q.len() && d_min != 0.0 {
-                x = q[j].data.clone();
-                if f.call(&x).0.upper() < *fbest {
-                    q.remove(j);
-                    continue;
-                }
-                let d = distance(&pop[i].solution, &x);
-
-                if d == 0.0 {d_min = 0.0; continue;}
-                else {
-                    if d < d_min {d_min = d; x_c = x.clone();}
-                }
-                j += 1;
-            }
-            if d_min == 0.0 {
-                let fp = f.call(&pop[i].solution).0.lower();
-                if px < fp {
-                    q[j] = Quple{p: fp, pf: q[j].pf,
-                                 data: q[j].data.clone(),
-                                 fdata: q[j].fdata,
-                                 dfdata: q[j].dfdata.clone(),
-                                 dead: false}.clone();
-                }
-            }
-            else {
-                // Individual is outside the search region.
-                // Project it back into the nearest current search space.
-                project(&mut pop[i], &x_c, f.clone());
+            if stop.load(Ordering::Acquire) { // Check if we've already stopped
+                break 'out;
             }
         }
-        // Restore the q for the ibba thread.
-        (*q_u) = BinaryHeap::from(q);
-        // Clear sync flag.
-        sync.store(false, Ordering::SeqCst);
-
-        // Resume EA and IBBA threads.
-        b2.wait();
     }
-}
-
-/* Projects the box x into the box x_c */
-fn project(p: &mut Individual, x_c: &Vec<GI>, f: FuncObj) {
-    for i in 0..x_c.len() {
-        if p.solution[i].lower() < x_c[i].lower()
-            || p.solution[i].lower() > x_c[i].upper() {
-                if x_c[i].upper() < p.solution[i].lower()
-                {p.solution[i] = GI::new_d(x_c[i].upper(),
-                                           x_c[i].upper());}
-                else {p.solution[i] = GI::new_d(x_c[i].lower(),
-                                                x_c[i].lower());}
-            }
-    }
-    p.fitness = f.call(&p.solution).0.lower();
 }
 
 fn main() {
+    let universe = mpi::initialize().unwrap();
+    let world = universe.world();
+    let size = world.size();
+    let rank = world.rank();
+    
     let args = process_args();
 
     let ref x_0 = args.domain;
@@ -380,104 +284,44 @@ fn main() {
     let y_err = args.y_error;
     let y_rel = args.y_error_rel;
     let seed = args.seed;
-
+    let logging = args.logging;
+    let max_iters = args.iters;
+    let threads = args.threads;
+    
     // Early out if there are no input variables...
-    if x_0.len() == 0 {
+    if x_0.len() == 0 && rank == 0 {
         let result = fo.call(&x_0).0;
         println!("[[{},{}], {{}}]", result.lower(), result.upper());
         return
     }
 
-    let q_inner: BinaryHeap<Quple> = BinaryHeap::new();
-    let q = Arc::new(RwLock::new(q_inner));
-
-    let population_inner: Vec<Individual> = Vec::new();
-    let population = Arc::new(RwLock::new(population_inner));
-
-    let b1 = Arc::new(Barrier::new(3));
-    let b2 = Arc::new(Barrier::new(3));
-
-    let sync = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
-
-    let f_bestag: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
-    let f_best_shared: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
-
+    let f_best_ga: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
     let x_e = x_0.clone();
     let x_i = x_0.clone();
+    
+    // IBBA
+    if rank == 0 {
+        { // Start the timer
+            let stop = stop.clone();
+            let to = args.timeout.clone();
+            let ui = args.update_interval.clone();
+            let t_thread =
+                thread::Builder::new()
+                .name("Timer".to_string())
+                .spawn(move || timer(stop, ui, to));
+        }
+        let ibba_thread =
+        { // Start IBBA
+            let threads_c = threads.clone();
+            let fo_c = fo.clone();
+            ibba_threadpool_wrapper(x_e, x_err, y_err, y_rel, f_best_ga,
+                                    stop, fo_c, logging, max_iters, threads_c,
+                                    &world)
+        };
 
-    let x_bestbb = Arc::new(RwLock::new(x_0.clone()));
-
-    let ibba_thread =
-    {
-        let q = q.clone();
-        let b1 = b1.clone();
-        let b2 = b2.clone();
-        let f_bestag = f_bestag.clone();
-        let f_best_shared = f_best_shared.clone();
-        let x_bestbb = x_bestbb.clone();
-        let sync = sync.clone();
-        let stop = stop.clone();
-        let fo_c = fo.clone();
-        let logging = args.logging;
-        let iters= args.iters;
-        thread::Builder::new().name("IBBA".to_string()).spawn(move || {
-            ibba_threadpool_wrapper(x_i, x_err, y_err, y_rel,
-                                    f_bestag, f_best_shared,
-                                    x_bestbb,
-                                    b1, b2, q, sync, stop, fo_c, logging, iters,
-                                    8)// testing now, needs to be an arg
-        })};
-
-    let ea_thread =
-    {
-        let population = population.clone();
-        let f_bestag = f_bestag.clone();
-        let x_bestbb = x_bestbb.clone();
-        let sync = sync.clone();
-        let stop = stop.clone();
-        let b1 = b1.clone();
-        let b2 = b2.clone();
-        let fo_c = fo.clone();
-        let factor = x_e.len();
-        thread::Builder::new().name("EA".to_string()).spawn(move || {
-            ea(x_e, Parameters{population: 50*factor, //1000,
-                               selection: 8, //4,
-                               elitism: 5, //2,
-                               mutation: 0.4_f64,//0.3_f64,
-                               crossover: 0.0_f64, // 0.5_f64
-                               seed:  seed,
-                               threads: 8, // testing now, needs to be an arg
-            },
-               population,
-               f_bestag,
-               x_bestbb,
-               b1, b2,
-               stop, sync, fo_c)
-        })};
-
-    // pending finding out how to kill threads
-    //let update_thread =
-    {
-        let q = q.clone();
-        let population = population.clone();
-        let f_best_shared = f_best_shared.clone();
-        let sync = sync.clone();
-        let stop = stop.clone();
-        let b1 = b1.clone();
-        let b2 = b2.clone();
-        let fo_c = fo.clone();
-        let to = args.timeout.clone();
-        let ui = args.update_interval.clone();
-        let _ = thread::Builder::new().name("Update".to_string()).spawn(move || {
-            update(q, population, f_best_shared, stop, sync, b1, b2, fo_c, ui, to)
-        });};
-
-    let result = ibba_thread.unwrap().join();
-
-
-    if result.is_ok() {
-        let (min, mut max, mut interval, mut qvec) = result.unwrap();
+        // Print the result
+        let (min, mut max, mut interval, mut qvec) = ibba_thread;
         // Go through all remaining intervals from IBBA to find the true
         // max
         // update f_best_high
@@ -502,12 +346,103 @@ fn main() {
             println!("'{}' : {},", args.names[i], interval[i].to_string());
         }
         println!("}}]");
-
+        
+        unsafe{ mpi::ffi::MPI_Abort(world.as_raw(), 0); } // Not a good way to die
     }
-    else {println!("error")}
+    // GA
+    else {
+        
+    }
 
-    nix::sys::signal::kill(nix::unistd::getpid(), nix::sys::signal::SIGINT);
+    //    let f_best_shared: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
+
+
+    /*    let ibba_thread =
+    {
+    let q = q.clone();
+    let b1 = b1.clone();
+    let b2 = b2.clone();
+    let f_bestag = f_bestag.clone();
+    let f_best_shared = f_best_shared.clone();
+    let x_bestbb = x_bestbb.clone();
+    let sync = sync.clone();
+    let stop = stop.clone();
+    let fo_c = fo.clone();
+    let logging = args.logging;
+    let iters= args.iters;
+    thread::Builder::new().name("IBBA".to_string()).spawn(move || {
+    ibba_threadpool_wrapper(x_i, x_err, y_err, y_rel,
+    f_bestag, f_best_shared,
+    x_bestbb,
+    b1, b2, q, sync, stop, fo_c, logging, iters,
+    8)// testing now, needs to be an arg
+})};*/
+
+    /*    let ea_thread =
+    {
+    let population = population.clone();
+    let f_bestag = f_bestag.clone();
+    let x_bestbb = x_bestbb.clone();
+    let sync = sync.clone();
+    let stop = stop.clone();
+    let b1 = b1.clone();
+    let b2 = b2.clone();
+    let fo_c = fo.clone();
+    let factor = x_e.len();
+    thread::Builder::new().name("EA".to_string()).spawn(move || {
+    ea(x_e, Parameters{population: 50*factor, //1000,
+    selection: 8, //4,
+    elitism: 5, //2,
+    mutation: 0.4_f64,//0.3_f64,
+    crossover: 0.0_f64, // 0.5_f64
+    seed:  seed,
+    threads: 8, // testing now, needs to be an arg
+},
+    population,
+    f_bestag,
+    x_bestbb,
+    b1, b2,
+    stop, sync, fo_c)
+})};*/
+
+    // pending finding out how to kill threads
+    //let update_thread =
+
+    //    let result = ibba_thread.unwrap().join();
+
+
+    /*    if result.is_ok() {
+    let (min, mut max, mut interval, mut qvec) = result.unwrap();
+    // Go through all remaining intervals from IBBA to find the true
+    // max
+    // update f_best_high
+    if let Some(new_best_high_it) = qvec.par_iter().max_by_key(|it| f64_o::new(it.fx.upper()) ) {
+    if new_best_high_it.fx.upper() > max {
+    max = new_best_high_it.fx.upper();
+    interval = new_best_high_it.x.clone();
+}
+}
+    
+    // let ref lq = q.read().unwrap();
+    // for i in qvec.iter() {
+    //     let ref top = *i;
+    //     let (ub, dom) = (top.fdata.upper(), &top.data);
+    //     if ub > max {
+    //     max = ub;
+    //     interval = dom.clone();
+    // }
+    // }
+    println!("[[{},{}], {{", min, max);
+    for i in 0..args.names.len() {
+    println!("'{}' : {},", args.names[i], interval[i].to_string());
+}
+    println!("}}]");
+
+}
+    else {println!("error")} */
+
+    //    nix::sys::signal::kill(nix::unistd::getpid(), nix::sys::signal::SIGINT);
 
     // We don't need an answer from this...
-    let _ea_result = ea_thread.unwrap().join();
+    //    let _ea_result = ea_thread.unwrap().join();
 }
