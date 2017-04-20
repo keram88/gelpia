@@ -1,6 +1,8 @@
+use std::thread;
 use std::sync::{Barrier, RwLock, Arc};
 use std::sync::atomic::{AtomicBool};
 use std::sync::atomic::Ordering as AtOrd;
+
 extern crate rand;
 use rand::{Rng, SeedableRng, XorShiftRng};
 use rand::distributions::{IndependentSample, Range};
@@ -13,7 +15,7 @@ use mpi::ffi::{MPI_Abort, MPI_Comm};
 use mpi::raw::{AsRaw};
 
 extern crate gr;
-use gr::{GI};
+use gr::*;
 
 extern crate gelpia_utils;
 use gelpia_utils::{Flt, Parameters};
@@ -41,6 +43,18 @@ impl Equivalence for Individual {
     }
 }
 
+/// Recieves broadcasted promising domains from root
+fn get_x_best(x_best: Arc<RwLock<Vec<GI>>>, world: SystemCommunicator) {
+    let root_process = world.process_at_rank(0);
+    let mut x: Vec<GI> = Vec::new();
+    loop {
+        root_process.broadcast_into(&mut x[..]);
+        {
+            *x_best.write().unwrap() = x.clone()
+        }
+    }
+}
+
 pub fn ea(x_e: Vec<GI>,
           param: Parameters,
           fo_c: FuncObj,
@@ -53,18 +67,27 @@ pub fn ea(x_e: Vec<GI>,
 
     let config = rayon::Configuration::new().num_threads(param.threads);
     let pool = rayon::ThreadPool::new(config).unwrap();
-    pool.install(|| ea_core(&x_e, &param, &fo_c, world));
+    let x_bestbb = Arc::new(RwLock::new(x_e.clone()));
+    {
+        let x_bestbb = x_bestbb.clone();
+        let world = world.clone();
+        thread::Builder::new()
+            .name("X-Best-RX".to_string())
+            .spawn(move || get_x_best(x_bestbb, world));
+    }
+    pool.install(|| ea_core(&x_e, &param, &fo_c, &x_bestbb, world));
 }
 
 
 fn ea_core(x_e: &Vec<GI>,
            param: &Parameters,
            fo_c: &FuncObj,
+           x_bestbb: &Arc<RwLock<Vec<GI>>>,
            world: &SystemCommunicator)
            -> () {
     let rank = world.rank();
-    let next_rank = if rank < world.size() - 1 { rank } else { 1 };
-
+    let next_rank = if rank < world.size() - 1 { rank + 1 } else { 1 };
+    let prev_rank = if rank == 1 { world.size() -1 } else { rank - 1 };
     let seed: u32 =
         match param.seed {
             0 => 3735928579,
@@ -139,10 +162,10 @@ fn ea_core(x_e: &Vec<GI>,
 
         // Kill worst of the worst
         {
-            // let bestbb = x_bestbb.read().unwrap();
-            // let ftg = bestbb.iter().map(|g| Range::new(g.lower(), g.upper())).collect();
-            // let worst_ind = population.len() - 1;
-            // population[worst_ind] = rand_individual(fo_c, &ftg, &mut rng);
+            let bestbb = x_bestbb.read().unwrap();
+            let ftg = bestbb.iter().map(|g| Range::new(g.lower(), g.upper())).collect();
+            let worst_ind = population.len() - 1;
+            population[worst_ind] = rand_individual(fo_c, &ftg, &mut rng);
         }
 
         population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
