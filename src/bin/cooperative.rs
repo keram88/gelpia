@@ -333,7 +333,8 @@ fn update(q: Arc<RwLock<BinaryHeap<Quple>>>, population: Arc<RwLock<Vec<Individu
                                    q[j] = Quple{p: fp, pf: q[j].pf,
                                                 data: q[j].data.clone(),
                                                 fdata: q[j].fdata,
-                                                dfdata: q[j].dfdata.clone()}.clone();
+                                                dfdata: q[j].dfdata.clone(),
+                                                dead: false}.clone();
                                }
                            }
                            else {
