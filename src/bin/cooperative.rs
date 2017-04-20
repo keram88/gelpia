@@ -8,6 +8,9 @@ extern crate gelpia_utils;
 extern crate ga;
 extern crate gr;
 
+extern crate mpi;
+
+
 use ga::{ea, Individual};
 
 use gelpia_utils::{Quple, INF, NINF, Flt, Parameters, eps_tol, check_diff};
@@ -311,200 +314,200 @@ fn update(q: Arc<RwLock<BinaryHeap<Quple>>>, population: Arc<RwLock<Vec<Individu
             let mut d_min = INF;
             let mut j = 0;
             let mut x: Vec<GI>;
-                           let px: Flt = NINF;
-                           let mut x_c: Vec<GI> = q[0].data.clone();
-                           while j < q.len() && d_min != 0.0 {
-                               x = q[j].data.clone();
-                               if f.call(&x).0.upper() < *fbest {
-                                   q.remove(j);
-                                   continue;
-                               }
-                               let d = distance(&pop[i].solution, &x);
+            let px: Flt = NINF;
+            let mut x_c: Vec<GI> = q[0].data.clone();
+            while j < q.len() && d_min != 0.0 {
+                x = q[j].data.clone();
+                if f.call(&x).0.upper() < *fbest {
+                    q.remove(j);
+                    continue;
+                }
+                let d = distance(&pop[i].solution, &x);
 
-                               if d == 0.0 {d_min = 0.0; continue;}
-                               else {
-                                   if d < d_min {d_min = d; x_c = x.clone();}
-                               }
-                               j += 1;
-                           }
-                           if d_min == 0.0 {
-                               let fp = f.call(&pop[i].solution).0.lower();
-                               if px < fp {
-                                   q[j] = Quple{p: fp, pf: q[j].pf,
-                                                data: q[j].data.clone(),
-                                                fdata: q[j].fdata,
-                                                dfdata: q[j].dfdata.clone(),
-                                                dead: false}.clone();
-                               }
-                           }
-                           else {
-                               // Individual is outside the search region.
-                               // Project it back into the nearest current search space.
-                               project(&mut pop[i], &x_c, f.clone());
-                           }
+                if d == 0.0 {d_min = 0.0; continue;}
+                else {
+                    if d < d_min {d_min = d; x_c = x.clone();}
+                }
+                j += 1;
             }
-            // Restore the q for the ibba thread.
-            (*q_u) = BinaryHeap::from(q);
-            // Clear sync flag.
-            sync.store(false, Ordering::SeqCst);
-
-            // Resume EA and IBBA threads.
-            b2.wait();
+            if d_min == 0.0 {
+                let fp = f.call(&pop[i].solution).0.lower();
+                if px < fp {
+                    q[j] = Quple{p: fp, pf: q[j].pf,
+                                 data: q[j].data.clone(),
+                                 fdata: q[j].fdata,
+                                 dfdata: q[j].dfdata.clone(),
+                                 dead: false}.clone();
+                }
+            }
+            else {
+                // Individual is outside the search region.
+                // Project it back into the nearest current search space.
+                project(&mut pop[i], &x_c, f.clone());
+            }
         }
-    }
+        // Restore the q for the ibba thread.
+        (*q_u) = BinaryHeap::from(q);
+        // Clear sync flag.
+        sync.store(false, Ordering::SeqCst);
 
-    /* Projects the box x into the box x_c */
-    fn project(p: &mut Individual, x_c: &Vec<GI>, f: FuncObj) {
-        for i in 0..x_c.len() {
-            if p.solution[i].lower() < x_c[i].lower()
-                                       || p.solution[i].lower() > x_c[i].upper() {
+        // Resume EA and IBBA threads.
+        b2.wait();
+    }
+}
+
+/* Projects the box x into the box x_c */
+fn project(p: &mut Individual, x_c: &Vec<GI>, f: FuncObj) {
+    for i in 0..x_c.len() {
+        if p.solution[i].lower() < x_c[i].lower()
+            || p.solution[i].lower() > x_c[i].upper() {
                 if x_c[i].upper() < p.solution[i].lower()
-                                    {p.solution[i] = GI::new_d(x_c[i].upper(),
-                                                               x_c[i].upper());}
-                                    else {p.solution[i] = GI::new_d(x_c[i].lower(),
-                                                                    x_c[i].lower());}
-                }
+                {p.solution[i] = GI::new_d(x_c[i].upper(),
+                                           x_c[i].upper());}
+                else {p.solution[i] = GI::new_d(x_c[i].lower(),
+                                                x_c[i].lower());}
             }
-            p.fitness = f.call(&p.solution).0.lower();
-        }
-
-        fn main() {
-            let args = process_args();
-
-            let ref x_0 = args.domain;
-            let ref fo = args.function;
-            let x_err = args.x_error;
-            let y_err = args.y_error;
-            let y_rel = args.y_error_rel;
-            let seed = args.seed;
-
-            // Early out if there are no input variables...
-            if x_0.len() == 0 {
-                let result = fo.call(&x_0).0;
-                println!("[[{},{}], {{}}]", result.lower(), result.upper());
-                return
-            }
-
-            let q_inner: BinaryHeap<Quple> = BinaryHeap::new();
-            let q = Arc::new(RwLock::new(q_inner));
-
-            let population_inner: Vec<Individual> = Vec::new();
-            let population = Arc::new(RwLock::new(population_inner));
-
-            let b1 = Arc::new(Barrier::new(3));
-            let b2 = Arc::new(Barrier::new(3));
-
-            let sync = Arc::new(AtomicBool::new(false));
-            let stop = Arc::new(AtomicBool::new(false));
-
-            let f_bestag: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
-            let f_best_shared: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
-
-            let x_e = x_0.clone();
-            let x_i = x_0.clone();
-
-            let x_bestbb = Arc::new(RwLock::new(x_0.clone()));
-
-            let ibba_thread =
-            {
-                let q = q.clone();
-                let b1 = b1.clone();
-                let b2 = b2.clone();
-                let f_bestag = f_bestag.clone();
-                let f_best_shared = f_best_shared.clone();
-                let x_bestbb = x_bestbb.clone();
-                let sync = sync.clone();
-                let stop = stop.clone();
-                let fo_c = fo.clone();
-                let logging = args.logging;
-                let iters= args.iters;
-                thread::Builder::new().name("IBBA".to_string()).spawn(move || {
-                    ibba_threadpool_wrapper(x_i, x_err, y_err, y_rel,
-                                           f_bestag, f_best_shared,
-                                           x_bestbb,
-                                           b1, b2, q, sync, stop, fo_c, logging, iters,
-                                           8)// testing now, needs to be an arg
-                })};
-
-            let ea_thread =
-            {
-                let population = population.clone();
-                let f_bestag = f_bestag.clone();
-                let x_bestbb = x_bestbb.clone();
-                let sync = sync.clone();
-                let stop = stop.clone();
-                let b1 = b1.clone();
-                let b2 = b2.clone();
-                let fo_c = fo.clone();
-                let factor = x_e.len();
-                thread::Builder::new().name("EA".to_string()).spawn(move || {
-                    ea(x_e, Parameters{population: 50*factor, //1000,
-                                       selection: 8, //4,
-                                       elitism: 5, //2,
-                                       mutation: 0.4_f64,//0.3_f64,
-                                       crossover: 0.0_f64, // 0.5_f64
-                                       seed:  seed,
-                                       threads: 8, // testing now, needs to be an arg
-                    },
-                       population,
-                       f_bestag,
-                       x_bestbb,
-                       b1, b2,
-                       stop, sync, fo_c)
-                })};
-
-            // pending finding out how to kill threads
-            //let update_thread =
-            {
-                let q = q.clone();
-                let population = population.clone();
-                let f_best_shared = f_best_shared.clone();
-                let sync = sync.clone();
-                let stop = stop.clone();
-                let b1 = b1.clone();
-                let b2 = b2.clone();
-                let fo_c = fo.clone();
-                let to = args.timeout.clone();
-                let ui = args.update_interval.clone();
-                let _ = thread::Builder::new().name("Update".to_string()).spawn(move || {
-                    update(q, population, f_best_shared, stop, sync, b1, b2, fo_c, ui, to)
-                });};
-
-            let result = ibba_thread.unwrap().join();
-
-
-            if result.is_ok() {
-                let (min, mut max, mut interval, mut qvec) = result.unwrap();
-                // Go through all remaining intervals from IBBA to find the true
-                // max
-                            // update f_best_high
-                if let Some(new_best_high_it) = qvec.par_iter().max_by_key(|it| f64_o::new(it.fx.upper()) ) {
-                    if new_best_high_it.fx.upper() > max {
-                        max = new_best_high_it.fx.upper();
-                        interval = new_best_high_it.x.clone();
-                    }
-                }
-                
-                // let ref lq = q.read().unwrap();
-                // for i in qvec.iter() {
-                //     let ref top = *i;
-                //     let (ub, dom) = (top.fdata.upper(), &top.data);
-                //     if ub > max {
-                //     max = ub;
-                //     interval = dom.clone();
-                // }
-            // }
-            println!("[[{},{}], {{", min, max);
-            for i in 0..args.names.len() {
-                println!("'{}' : {},", args.names[i], interval[i].to_string());
-            }
-            println!("}}]");
-
-        }
-        else {println!("error")}
-
-        nix::sys::signal::kill(nix::unistd::getpid(), nix::sys::signal::SIGINT);
-
-        // We don't need an answer from this...
-        let _ea_result = ea_thread.unwrap().join();
     }
+    p.fitness = f.call(&p.solution).0.lower();
+}
+
+fn main() {
+    let args = process_args();
+
+    let ref x_0 = args.domain;
+    let ref fo = args.function;
+    let x_err = args.x_error;
+    let y_err = args.y_error;
+    let y_rel = args.y_error_rel;
+    let seed = args.seed;
+
+    // Early out if there are no input variables...
+    if x_0.len() == 0 {
+        let result = fo.call(&x_0).0;
+        println!("[[{},{}], {{}}]", result.lower(), result.upper());
+        return
+    }
+
+    let q_inner: BinaryHeap<Quple> = BinaryHeap::new();
+    let q = Arc::new(RwLock::new(q_inner));
+
+    let population_inner: Vec<Individual> = Vec::new();
+    let population = Arc::new(RwLock::new(population_inner));
+
+    let b1 = Arc::new(Barrier::new(3));
+    let b2 = Arc::new(Barrier::new(3));
+
+    let sync = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let f_bestag: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
+    let f_best_shared: Arc<RwLock<Flt>> = Arc::new(RwLock::new(NINF));
+
+    let x_e = x_0.clone();
+    let x_i = x_0.clone();
+
+    let x_bestbb = Arc::new(RwLock::new(x_0.clone()));
+
+    let ibba_thread =
+    {
+        let q = q.clone();
+        let b1 = b1.clone();
+        let b2 = b2.clone();
+        let f_bestag = f_bestag.clone();
+        let f_best_shared = f_best_shared.clone();
+        let x_bestbb = x_bestbb.clone();
+        let sync = sync.clone();
+        let stop = stop.clone();
+        let fo_c = fo.clone();
+        let logging = args.logging;
+        let iters= args.iters;
+        thread::Builder::new().name("IBBA".to_string()).spawn(move || {
+            ibba_threadpool_wrapper(x_i, x_err, y_err, y_rel,
+                                    f_bestag, f_best_shared,
+                                    x_bestbb,
+                                    b1, b2, q, sync, stop, fo_c, logging, iters,
+                                    8)// testing now, needs to be an arg
+        })};
+
+    let ea_thread =
+    {
+        let population = population.clone();
+        let f_bestag = f_bestag.clone();
+        let x_bestbb = x_bestbb.clone();
+        let sync = sync.clone();
+        let stop = stop.clone();
+        let b1 = b1.clone();
+        let b2 = b2.clone();
+        let fo_c = fo.clone();
+        let factor = x_e.len();
+        thread::Builder::new().name("EA".to_string()).spawn(move || {
+            ea(x_e, Parameters{population: 50*factor, //1000,
+                               selection: 8, //4,
+                               elitism: 5, //2,
+                               mutation: 0.4_f64,//0.3_f64,
+                               crossover: 0.0_f64, // 0.5_f64
+                               seed:  seed,
+                               threads: 8, // testing now, needs to be an arg
+            },
+               population,
+               f_bestag,
+               x_bestbb,
+               b1, b2,
+               stop, sync, fo_c)
+        })};
+
+    // pending finding out how to kill threads
+    //let update_thread =
+    {
+        let q = q.clone();
+        let population = population.clone();
+        let f_best_shared = f_best_shared.clone();
+        let sync = sync.clone();
+        let stop = stop.clone();
+        let b1 = b1.clone();
+        let b2 = b2.clone();
+        let fo_c = fo.clone();
+        let to = args.timeout.clone();
+        let ui = args.update_interval.clone();
+        let _ = thread::Builder::new().name("Update".to_string()).spawn(move || {
+            update(q, population, f_best_shared, stop, sync, b1, b2, fo_c, ui, to)
+        });};
+
+    let result = ibba_thread.unwrap().join();
+
+
+    if result.is_ok() {
+        let (min, mut max, mut interval, mut qvec) = result.unwrap();
+        // Go through all remaining intervals from IBBA to find the true
+        // max
+        // update f_best_high
+        if let Some(new_best_high_it) = qvec.par_iter().max_by_key(|it| f64_o::new(it.fx.upper()) ) {
+            if new_best_high_it.fx.upper() > max {
+                max = new_best_high_it.fx.upper();
+                interval = new_best_high_it.x.clone();
+            }
+        }
+        
+        // let ref lq = q.read().unwrap();
+        // for i in qvec.iter() {
+        //     let ref top = *i;
+        //     let (ub, dom) = (top.fdata.upper(), &top.data);
+        //     if ub > max {
+        //     max = ub;
+        //     interval = dom.clone();
+        // }
+        // }
+        println!("[[{},{}], {{", min, max);
+        for i in 0..args.names.len() {
+            println!("'{}' : {},", args.names[i], interval[i].to_string());
+        }
+        println!("}}]");
+
+    }
+    else {println!("error")}
+
+    nix::sys::signal::kill(nix::unistd::getpid(), nix::sys::signal::SIGINT);
+
+    // We don't need an answer from this...
+    let _ea_result = ea_thread.unwrap().join();
+}
