@@ -337,4 +337,6 @@ def finish_parsing_args(args, function, epsilons):
             "dreal"              : args.dreal,
             "fptaylor"           : args.fptaylor,
             "iters"              : args.maxiters,
-            "seed"               : args.seed,}
+            "seed"               : args.seed,
+            "concurrency"        : args.concurrency,
+            "np"                 : args.np,}

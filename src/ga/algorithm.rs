@@ -7,6 +7,8 @@ extern crate rand;
 use rand::{Rng, SeedableRng, XorShiftRng};
 use rand::distributions::{IndependentSample, Range};
 
+use std::time::Duration;
+
 extern crate mpi;
 use mpi::traits::*;
 use mpi::datatype::UserDatatype;
@@ -189,6 +191,7 @@ fn ea_core(x_e: &Vec<GI>,
         population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
 
         send_hint(population[0].fitness, world);
+
         // Report fittest of the fit.
         {
             // let mut fbest = f_bestag.write().unwrap();
@@ -215,6 +218,7 @@ fn ea_core(x_e: &Vec<GI>,
         }
 
         population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
+        counter += 1;
     }
 
     return;

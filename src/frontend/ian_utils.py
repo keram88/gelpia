@@ -156,7 +156,7 @@ def run(cmd, args_list, error_string="An Error has occured", expected_return=0):
 
 def run_async(cmd, args_list, term_time, procs, error_string="An Error has occured",
               expected_return=0):
-    command = ["mpiexec", str(procs)] + [cmd] + args_list
+    command = ["mpiexec", "-np", str(procs)] + [cmd] + args_list
     should_exit = None
     try:
         with SP.Popen(command, bufsize=1, universal_newlines=True,
