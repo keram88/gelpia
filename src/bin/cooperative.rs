@@ -18,7 +18,6 @@ use mpi::point_to_point::Source;
 use ga::{ea, Individual};
 
 use gelpia_utils::{Quple, INF, NINF, Flt, Parameters, eps_tol, check_diff};
-
 use gr::{GI, width_box, split_box, midpoint_box};
 
 use std::sync::{Barrier, RwLock, Arc, RwLockWriteGuard};

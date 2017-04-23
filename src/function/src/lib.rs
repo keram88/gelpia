@@ -42,6 +42,18 @@ pub struct FuncObj {
     max_stack: usize,
 }
 
+impl fmt::Display for FuncObj {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut s: String = String::new();
+        let ref x = self.instructions;
+        for i in x {
+            s += format!("{}", i).as_str();
+            s += " ";
+        }
+        write!(f, "Fo: {} {}", s, self.max_stack)
+    }
+}
+
 impl FuncObj {
     pub fn call(&self, _x: &Vec<GI>) -> (GI, Option<Vec<GI>>) {
         self.interpreted(_x, &self.constants)
@@ -104,6 +116,9 @@ impl FuncObj {
                     arg.pow(exp);
                 }
             }
+        }
+        if stack.len() == 0 {
+            println!("Uh oh");
         }
         (stack[0], None)
     }

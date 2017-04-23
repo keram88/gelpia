@@ -22,7 +22,6 @@ use gr::*;
 
 extern crate gelpia_utils;
 use gelpia_utils::{Flt, Parameters};
-
 extern crate function;
 use function::FuncObj;
 
@@ -47,13 +46,14 @@ impl Equivalence for Individual {
 }
 
 /// Recieves broadcasted promising domains from root
-fn get_x_best(x_best: Arc<RwLock<Vec<GI>>>, world: SystemCommunicator) {
+fn get_x_best(x_best: Arc<RwLock<Vec<GI>>>, x_i: Vec<GI>,
+              world: SystemCommunicator) {
     let root_process = world.process_at_rank(0);
     loop {
-        let mut x: Vec<GI> = Vec::new();
+        let mut x: Vec<GI> = x_i.clone();
         root_process.broadcast_into(&mut x[..]);
         {
-            *x_best.write().unwrap() = x.clone()
+            *x_best.write().unwrap() = x.clone();
         }
     }
 }
@@ -111,9 +111,10 @@ pub fn ea(x_e: Vec<GI>,
     {
         let x_bestbb = x_bestbb.clone();
         let world = world.clone();
+        let x_i = x_e.clone();
         thread::Builder::new()
             .name("X-Best-RX".to_string())
-            .spawn(move || get_x_best(x_bestbb, world));
+            .spawn(move || get_x_best(x_bestbb, x_i, world));
     }
     pool.install(|| ea_core(&x_e, &param, &fo_c, &x_bestbb, world));
 }
@@ -169,7 +170,6 @@ fn ea_core(x_e: &Vec<GI>,
         let ind = population[i].clone();
         elites.push(ind);
     }
-
     let mut counter = 1;
     loop {
         {
@@ -203,10 +203,12 @@ fn ea_core(x_e: &Vec<GI>,
             // }
         }
 
-        if counter % 20 == 0 {
-            let migrants = migrate(&population, prev_rank,
+        if counter % 1000 == 0 {
+            let mut migrants = migrate(&population, prev_rank,
                                    next_rank, 7, world, &fo_c);
-            // Integrate migrants
+            population.append(&mut migrants);
+            population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
+            population.truncate(param.population);
         }
 
         // Kill worst of the worst
