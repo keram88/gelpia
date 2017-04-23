@@ -13,6 +13,7 @@ use mpi::datatype::UserDatatype;
 use mpi::topology::*;
 use mpi::ffi::{MPI_Abort, MPI_Comm};
 use mpi::raw::{AsRaw};
+use mpi::request::WaitGuard;
 
 extern crate gr;
 use gr::*;
@@ -46,13 +47,50 @@ impl Equivalence for Individual {
 /// Recieves broadcasted promising domains from root
 fn get_x_best(x_best: Arc<RwLock<Vec<GI>>>, world: SystemCommunicator) {
     let root_process = world.process_at_rank(0);
-    let mut x: Vec<GI> = Vec::new();
     loop {
+        let mut x: Vec<GI> = Vec::new();
         root_process.broadcast_into(&mut x[..]);
         {
             *x_best.write().unwrap() = x.clone()
         }
     }
+}
+
+fn migrate(pop: &Vec<Individual>, src: i32, dest: i32,
+           count: usize, comm: &SystemCommunicator,
+           fo_c: &FuncObj)
+           -> Vec<Individual> {
+    let mut migrants_flat = Vec::new();
+    let size = pop[0].solution.len();
+    
+    // Send flattened
+    for i in 0..count {
+        let ref sol = pop[i].solution;
+        for x in sol {
+            migrants_flat.push(x.clone());
+        }
+    }
+    let _sreq = WaitGuard::from(comm.process_at_rank(dest)
+                                .immediate_send(&migrants_flat[..]));
+    let (new_migrants_flat, _) = comm.process_at_rank(src)
+        .receive_vec::<GI>();
+
+    // Expand migrants
+    let mut new_migrants: Vec<Individual> = Vec::new();
+    for i in 0..count {
+        let mut new_sol: Vec<GI> = Vec::new();
+        for j in 0..size {
+            new_sol.push(new_migrants_flat[i*size + j].clone());
+        }
+        let fitness = fo_c.call(&new_sol).0.lower();
+        new_migrants.push(Individual{ solution: new_sol, fitness: fitness });
+    }
+    
+    new_migrants
+}
+
+fn send_hint(hint: Flt, comm: &SystemCommunicator) {
+    comm.process_at_rank(0).send(&hint);
 }
 
 pub fn ea(x_e: Vec<GI>,
@@ -130,6 +168,7 @@ fn ea_core(x_e: &Vec<GI>,
         elites.push(ind);
     }
 
+    let mut counter = 1;
     loop {
         {
             elites.par_iter_mut()
@@ -149,6 +188,7 @@ fn ea_core(x_e: &Vec<GI>,
 
         population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap());
 
+        send_hint(population[0].fitness, world);
         // Report fittest of the fit.
         {
             // let mut fbest = f_bestag.write().unwrap();
@@ -158,6 +198,12 @@ fn ea_core(x_e: &Vec<GI>,
             // } else {
             //     *fbest
             // }
+        }
+
+        if counter % 20 == 0 {
+            let migrants = migrate(&population, prev_rank,
+                                   next_rank, 7, world, &fo_c);
+            // Integrate migrants
         }
 
         // Kill worst of the worst

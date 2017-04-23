@@ -93,6 +93,11 @@ def create_common_option_parser(use_ampersand):
     arg_parser.add_argument("-lq", "--log-query",
                             help="Saves a copy of the query for later examination/benchmarking",
                             action="store_true")
+    arg_parser.add_argument("-c", "--concurrency", help = "Threads per process",
+                            type=int, required=True,)
+    arg_parser.add_argument("-n", "--np", help = "Number of procs",
+                            type=int, required=True,)
+
     return arg_parser
 
 

@@ -12,6 +12,8 @@ extern crate mpi;
 use mpi::topology::*;
 use mpi::ffi::{MPI_Abort, MPI_Comm};
 use mpi::raw::{AsRaw};
+use mpi::collective::*;
+use mpi::point_to_point::Source;
 
 use ga::{ea, Individual};
 
@@ -122,6 +124,19 @@ pub struct Item {
     pub dead: bool,
 }
 
+fn optimizer_hint_receiver(f_best_ga: Arc<RwLock<Flt>>,
+                           world: &SystemCommunicator) {
+    let mut max_hint = NINF;
+    loop {
+        let mut hint: Flt;
+        let (hint, _status) = world.any_process().receive::<Flt>();
+        if hint > max_hint {
+            *f_best_ga.write().unwrap() = hint;
+            max_hint = hint
+        }
+    }
+}
+
 fn ibba_threadpool_wrapper(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
                            f_best_ga: Arc<RwLock<Flt>>,
                            stop: Arc<AtomicBool>, f: FuncObj,
@@ -144,7 +159,7 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
         logging: bool, max_iters: u32, world: &SystemCommunicator)
         -> (Flt, Flt, Vec<GI>, Vec<Item>) {
     let mut best_x = x_0.clone();
-
+    let root_process = world.process_at_rank(0);
     let mut iters: u32 = 0;
     let mut update_iters: u32 = 0;
     let (est_max, first_val, _) = est_func(&f, &x_0);
@@ -203,7 +218,10 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
             if new_best_low_it.iter_est > f_best_low {
                 f_best_low = new_best_low_it.iter_est;
                 // Broadcast best x_best
-
+                {
+                    let mut x = new_best_low_it.x.clone();
+                    root_process.broadcast_into(&mut x[..]);
+                }
                 //                *x_bestbb.write().unwrap() = new_best_low_it.x.clone();
             }
         }
@@ -271,7 +289,8 @@ fn timer(stop: Arc<AtomicBool>, upd_interval: u32, timeout: u32) {
 }
 
 fn main() {
-    let universe = mpi::initialize().unwrap();
+    let (universe, _) =
+        mpi::initialize_with_threading(Threading::Multiple).unwrap();
     let world = universe.world();
     let size = world.size();
     let rank = world.rank();
@@ -306,13 +325,23 @@ fn main() {
             let stop = stop.clone();
             let to = args.timeout.clone();
             let ui = args.update_interval.clone();
-            let t_thread =
+            let _t_thread =
                 thread::Builder::new()
                 .name("Timer".to_string())
                 .spawn(move || timer(stop, ui, to));
         }
+        { // Start guess receiver
+            let f_best_ga = f_best_ga.clone();
+            let _h_thread =
+                thread::Builder::new()
+                .name("Hinter".to_string())
+                .spawn(move || 
+                       optimizer_hint_receiver(f_best_ga, &world));
+
+        }
         let ibba_thread =
         { // Start IBBA
+            let f_best_ga = f_best_ga.clone();
             let threads_c = threads.clone();
             let fo_c = fo.clone();
             thread::Builder::new()
@@ -357,6 +386,7 @@ fn main() {
         {
             let fo_c = fo.clone();
             let factor = x_e.len();
+            let threads = args.threads.clone();
             thread::Builder::new().name("EA".to_string()).spawn(move || {
                 ea(x_e,
                    Parameters {population: 50*factor, //1000,
@@ -365,7 +395,7 @@ fn main() {
                                mutation: 0.4_f64,//0.3_f64,
                                crossover: 0.0_f64, // 0.5_f64
                                seed:  seed,
-                               threads: 8, // testing now, needs to be an arg
+                               threads: threads, // testing now, needs to be an arg
                    },
                    fo_c,
                    &world)

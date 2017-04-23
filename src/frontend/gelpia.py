@@ -132,7 +132,8 @@ def main():
                        "-M", str(arg_dict["iters"]),
                        "--seed", str(arg_dict["seed"]),
                        "-d" if arg_dict["debug"] else "", # If a debug run
-                       "-L" if arg_dict["logfile"] else "",]
+                       "-L" if arg_dict["logfile"] else "",
+                       "-T", arg_dict["concurrency"],]
 
 
     iu.log(1, lambda :iu.cyan("Human Readable:\n") + arg_dict["human_readable"]())
@@ -168,7 +169,9 @@ def main():
                 term_time = start + arg_dict["grace"]
 
         iu.log(1, lambda :iu.cyan("Running"))
-        for line in iu.run_async(executable, executable_args, term_time, expected_return=-2):
+        for line in iu.run_async(executable, executable_args,
+                                 term_time, arg_dict["np"],
+                                 expected_return=-2):
             if line.startswith("lb:"): # Hacky
                 if logging:
                     print(line.strip(), file=sys.stderr)
