@@ -133,7 +133,7 @@ def main():
                        "--seed", str(arg_dict["seed"]),
                        "-d" if arg_dict["debug"] else "", # If a debug run
                        "-L" if arg_dict["logfile"] else "",
-                       "-T", arg_dict["concurrency"],]
+                       "-T", str(arg_dict["concurrency"]),]
 
 
     iu.log(1, lambda :iu.cyan("Human Readable:\n") + arg_dict["human_readable"]())
@@ -171,7 +171,7 @@ def main():
         iu.log(1, lambda :iu.cyan("Running"))
         for line in iu.run_async(executable, executable_args,
                                  term_time, arg_dict["np"],
-                                 expected_return=-2):
+                                 expected_return=None):
             if line.startswith("lb:"): # Hacky
                 if logging:
                     print(line.strip(), file=sys.stderr)
@@ -206,9 +206,10 @@ def main():
         end = time.time()
     if output:
         try:
-            idx = output.find('[')
-            restoutput = output[idx:]
-            lst = eval(restoutput, {'inf':float('inf')})
+            routput = output.replace("application called MPI_Abort(MPI_COMM_WORLD, 0) - process 0","")
+            idx = routput.find('[')
+            restroutput = routput[idx:]
+            lst = eval(restroutput, {'inf':float('inf')})
             assert(type(lst[-1]) is dict)
             for k in list(lst[-1]):
                 if k[0] == "$":

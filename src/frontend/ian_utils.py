@@ -195,9 +195,10 @@ def run_async(cmd, args_list, term_time, procs, error_string="An Error has occur
                 should_exit = proc.returncode
     except KeyboardInterrupt:
         raise
-    except:
+    except Exception as e:
         error("Unable to run given executable, does it exist?")
         error("executable: {}".format(command))
+        print(e)
         SYS.exit(-1)
 
     if (should_exit != None):
