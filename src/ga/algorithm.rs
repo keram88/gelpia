@@ -127,6 +127,7 @@ fn ea_core(x_e: &Vec<GI>,
            world: &SystemCommunicator)
            -> () {
     let rank = world.rank();
+    let size = world.size();
     let next_rank = if rank < world.size() - 1 { rank + 1 } else { 1 };
     let prev_rank = if rank == 1 { world.size() -1 } else { rank - 1 };
     let seed: u32 =
@@ -203,7 +204,7 @@ fn ea_core(x_e: &Vec<GI>,
             // }
         }
 
-        if counter % 1000 == 0 {
+        if counter % 1000 == 0 && size > 2 {
             let mut migrants = migrate(&population, prev_rank,
                                    next_rank, 7, world, &fo_c);
             population.append(&mut migrants);

@@ -157,6 +157,8 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
         stop: Arc<AtomicBool>, f: FuncObj,
         logging: bool, max_iters: u32, world: &SystemCommunicator)
         -> (Flt, Flt, Vec<GI>, Vec<Item>) {
+    let take_size = 12 * 8;
+    
     let mut best_x = x_0.clone();
     let root_process = world.process_at_rank(0);
     let mut iters: u32 = 0;
@@ -194,10 +196,13 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
             log_max(&qvec, f_best_low, f_best_high);
         }
 
-        qvec.par_iter_mut().for_each(|it| mark_dead(it, &x_0, f_best_low, e_x, e_f, e_f_r));
+        let mut workspace: Vec<Item> = qvec.par_iter().rev().take(take_size).cloned().collect();
+        qvec.truncate(oldlen - workspace.len());
+
+        workspace.par_iter_mut().for_each(|it| mark_dead(it, &x_0, f_best_low, e_x, e_f, e_f_r));
 
         {
-            let dead_iter = qvec.par_iter().filter(|it| it.dead);
+            let dead_iter = workspace.par_iter().filter(|it| it.dead);
 
             // update f_best_high
             if let Some(new_best_high_it) = dead_iter.max_by_key(|it| f64_o::new(it.fx.upper()) ) {
@@ -211,7 +216,7 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
             }
         }
 
-        let split_vec: Vec<Item> = qvec.par_iter().filter(|it| !it.dead).flat_map(|it| split(it, &f)).collect();
+        let split_vec: Vec<Item> = workspace.par_iter().filter(|it| !it.dead).flat_map(|it| split(it, &f)).collect();
 
         if let Some(new_best_low_it) = split_vec.par_iter().max_by_key(|it| f64_o::new(it.iter_est) ) {
             if new_best_low_it.iter_est > f_best_low {
@@ -225,10 +230,14 @@ fn ibba(x_0: Vec<GI>, e_x: Flt, e_f: Flt, e_f_r: Flt,
             }
         }
 
-        let temp: Vec<Item> = split_vec.par_iter().filter(|it| !it.dead).cloned().collect();
-        temp.par_iter().cloned().collect_into(&mut qvec);
+        let mut temp: Vec<Item> = split_vec.par_iter().filter(|it| !it.dead).cloned().collect();
+        qvec.append(&mut temp);
         thislen = qvec.len();
 
+        if thislen > take_size {
+            qvec.sort_by(|a, b| a.iter_est.partial_cmp(&b.iter_est).unwrap());
+        }
+        
         iters += oldlen as u32;
         update_iters += oldlen as u32;
     }
